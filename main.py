@@ -9,6 +9,7 @@ addr = ip, porta
 
 #Socket criado
 meuSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+meuSocket.settimeout(2.0)
 
 class Conexao:
     def __init__(self, num_msg, num_conexao):
@@ -22,10 +23,8 @@ def gerar_isn():
     fim = (1 << 24) - 1
     return random.randint(inicio, fim)
 
-def enumeradorDeMensagem(payload):
-    quant_bytes = len(payload) if payload else 0
-    conexao.num_msg += quant_bytes
-
+def enumeradorDeMensagem(tamanho_payload):
+    conexao.num_msg += tamanho_payload
 
 def criarCabecalho(tipo):
     num_conexao = conexao.num_conexao 
@@ -49,11 +48,8 @@ def desencapsular (dados):
             print(menu_str)
  
             # Salva o número de conexão definido pelo servidor. Sem isso,
-            # todas as mensagens seguintes seriam enviadas com num_conexao=0.
             conexao.num_conexao = num_conexao
             conexao.conectado = True
-            # OBS: o num_msg vindo aqui é o ISN do SERVIDOR (não usamos para
-            # numerar as mensagens do cliente, que seguem a partir do próprio ISN).
  
         case 5:  # MUSIC_RESPONSE_CONCLUDED
             menu_str = payload.rstrip(b"\x00").decode("utf-8")
@@ -86,14 +82,14 @@ def desencapsular (dados):
 
 def encapsular (tipo, payload=None):
         match tipo:
-            case 1:  # CONN_REQ -> sem payload, só os 7 bytes de cabeçalho
+            case 1:  # CONN_REQ sem payload, só os 7 bytes de cabeçalho
                 cabecalho = criarCabecalho(tipo)
                 return cabecalho
-            case 3:  # MUSIC_SELECT -> payload de 1 byte com o id da música
+            case 3:  # MUSIC_SELECT payload de 1 byte com o id da música
                 cabecalho = criarCabecalho(tipo)
                 segmento = cabecalho + struct.pack("<B", payload)
                 return segmento
-            case 7:  # CONN_FIN -> sem payload
+            case 7:  # CONN_FIN sem payload
                 cabecalho = criarCabecalho(tipo)
                 return cabecalho
             case _:
@@ -106,21 +102,30 @@ def enviarMensagem(tipo, payload=None):
     if segmento is None:
         return
     meuSocket.sendto(segmento, addr)
-    enumeradorDeMensagem(payload if isinstance(payload, (bytes, bytearray)) else None)
-
+    tamanho_payload = len(segmento) - 7 
+    enumeradorDeMensagem(tamanho_payload)
 
 def receberMensagem():
-    dados, endereço = meuSocket.recvfrom(1007)
+    try:
+        dados, endereço = meuSocket.recvfrom(1007)
+    except socket.timeout:
+        return None
     mensagem = desencapsular(dados)
     return mensagem
 
 def conectar():
     print("Conectando ao servidor...")
-    enviarMensagem(1)          # CONN_REQ
-    receberMensagem()          # espera CONN_ACK (ou mensagem de erro)
+    tentativas = 0
+    while tentativas < 5:
+        enviarMensagem(1)          # CONN_REQ
+        resposta = receberMensagem()
+        if resposta is not None:
+            return
+        print("Timeout, tentando novamente...")
+        tentativas += 1
+    print("Não foi possível conectar após várias tentativas.")
 
 
-#Vamos lidar com o user
 def menu():
     opcao = input("Digite a opção desejada: ")
     return opcao
@@ -129,22 +134,22 @@ conexao = Conexao(gerar_isn(), 0)
 
 conectar()
 
+while conexao.conectado:
+    opcao = menu()
+
+    if opcao == "0":
+        print("Encerrando...")
+        enviarMensagem(7)
+        meuSocket.close()
+        break
+
+    elif opcao in ("1", "2", "3", "4"):
+        print(f"Você escolheu a música {opcao}")
+        enviarMensagem(3, int(opcao))
+        receberMensagem()
+    else:
+        print("Opção inválida!\n")
+
 if not conexao.conectado:
-    print("Não foi possível estabelecer conexão com o servidor. Encerrando.")
+    print("Conexão encerrada pelo servidor.")
     meuSocket.close()
-else:
-    while True:
-        opcao = menu()
- 
-        if opcao == "0":
-            print("Encerrando...")
-            enviarMensagem(7)  # CONN_FIN avisa o servidor do encerramento
-            meuSocket.close()
-            break
- 
-        elif opcao in ("1", "2", "3", "4"):
-            print(f"Você escolheu a música {opcao}")
-            enviarMensagem(3, int(opcao))
-            receberMensagem()
-        else:
-            print("Opção inválida!\n")
