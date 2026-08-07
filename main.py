@@ -2,12 +2,12 @@ import socket
 import struct
 import random
 
-#Endereço IP da melhor forma (do Servidor Catita)
+# Configurações do servidor (Rádio Catita FM)
 ip = "52.67.245.39"
 porta = 50000
-addr = ip, porta
+addr = (ip, porta)
 
-#Socket criado
+# Criação do socket UDP
 meuSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 meuSocket.settimeout(2.0)
 
@@ -18,20 +18,11 @@ class Conexao:
         self.conectado = False
         self.prox_byte_esperado = None
 
-#tentar algo com o struct
+# Sorteia um ISN (número inicial de sequência)
 def gerar_isn():
     inicio = 0
     fim = (1 << 24) - 1
     return random.randint(inicio, fim)
-
-def enumeradorDeMensagem(tamanho_payload):
-    conexao.num_msg += tamanho_payload
-
-def criarCabecalho(tipo):
-    num_conexao = conexao.num_conexao 
-    num_msg = conexao.num_msg
-    cabecalho = struct.pack("<BIH", tipo, num_msg, num_conexao)
-    return cabecalho
 
 def desencapsular(dados):
     if len(dados) < 7:
@@ -47,57 +38,62 @@ def desencapsular(dados):
             menu_str = payload.rstrip(b"\x00").decode("utf-8", errors="ignore")
             print(menu_str)
             conexao.num_conexao = num_conexao
-            conexao.prox_byte_esperado = num_msg  # O próximo byte esperado do SERVIDOR
+            conexao.prox_byte_esperado = num_msg  # Próximo byte esperado do servidor
             conexao.conectado = True
 
         case 4:  # MUSIC_RESPONSE
             if num_msg == conexao.prox_byte_esperado:
                 conexao.prox_byte_esperado += len(payload)
-                enviarMensagem(6)  # Envia ACK do pacote recebido
+                enviarMensagem(6)  # ACK cumulativo
                 return tipo, num_msg, num_conexao, payload
             else:
-                # Pacote duplicado ou fora de ordem: reenvia ACK do que já tinha
+                # Pacote duplicado ou fora de ordem: reenvia o ACK do que já tem
                 enviarMensagem(6)
                 return tipo, num_msg, num_conexao, None
 
         case 5:  # MUSIC_RESPONSE_CONCLUDED
             if num_msg == conexao.prox_byte_esperado:
-                conexao.prox_byte_esperado += len(payload)  # <- ESSENCIAL: contabiliza o payload
-                enviarMensagem(6)  # agora sim, ACK com o valor correto e atualizado
+                conexao.prox_byte_esperado += len(payload)
+                enviarMensagem(6)  # ACK cumulativo final
 
                 menu_str = payload.rstrip(b"\x00").decode("utf-8", errors="ignore")
                 print("\nTransferência concluída com sucesso!")
                 print(menu_str)
+                return tipo, num_msg, num_conexao, payload
             else:
-            # o ACK atual sem reprocessar/reimprimir nada
+                # Pacote fora de ordem
                 enviarMensagem(6)
+                return tipo, num_msg, num_conexao, None
 
-            return tipo, num_msg, num_conexao, payload
+        case 8:  # TOO_SHORT_ERR
+            print("[servidor] erro: mensagem enviada pelo cliente foi muito curta (< 7 bytes).")
+
+        case 9:  # TOO_LONG_ERR
+            print("[servidor] erro: mensagem enviada pelo cliente foi muito longa (> 1007 bytes).")
 
         case 10:  # INVALID_CONN
             print(f"[servidor] número de conexão inválido: {num_conexao}")
             conexao.conectado = False
             
-        case 11:
+        case 11:  # INVALID_MUSIC
             print("[servidor] identificador de música inválido.")
             
-        case 12:
+        case 12:  # INVALID_MSG
             print(f"[servidor] número de mensagem inválido. Esperado pelo servidor: {num_msg}")
+            conexao.num_msg = num_msg
 
     return tipo, num_msg, num_conexao, payload 
 
-
-
 def encapsular(tipo, payload=None):
     match tipo:
-        case 1:  # CONN_REQ 
+        case 1:  # CONN_REQ
             return struct.pack("<BIH", tipo, conexao.num_msg, 0)
             
-        case 3:  # MUSIC_SELECT 
+        case 3:  # MUSIC_SELECT
             cabecalho = struct.pack("<BIH", tipo, conexao.num_msg, conexao.num_conexao)
             return cabecalho + struct.pack("<B", payload)
             
-        case 6:  # ACK cumulativo 
+        case 6:  # ACK cumulativo
             return struct.pack("<BIH", tipo, conexao.prox_byte_esperado, conexao.num_conexao)
             
         case 7:  # CONN_FIN
@@ -113,39 +109,43 @@ def enviarMensagem(tipo, payload=None):
         return
     meuSocket.sendto(segmento, addr)
     
-    # Atualiza o num_msg apenas para pacotes que consomem bytes de sequência do cliente
     if tipo == 3:
-        conexao.num_msg += 1  # MUSIC_SELECT tem 1 byte de payload
-
+        conexao.num_msg += 1  # MUSIC_SELECT consome 1 byte de sequência
 
 def receberMensagem():
     try:
-        dados, endereço = meuSocket.recvfrom(1007)
+        dados, _ = meuSocket.recvfrom(1007)
     except socket.timeout:
         return None
-    mensagem = desencapsular(dados)
-    return mensagem
+    return desencapsular(dados)
 
 def baixar_musica(opcao):
     print(f"\nSolicitando música {opcao}...")
+    
+    msg_num_inicial = conexao.num_msg
     enviarMensagem(3, int(opcao))
     
     buffer_musica = bytearray()
+    recebeu_algum_pacote = False
     
     while conexao.conectado:
         try:
-            # Buffer ajustado para suportar cabeçalho + até 1000 bytes do payload
             dados, _ = meuSocket.recvfrom(2000)
         except socket.timeout:
-            # Em caso de timeout de rede, reenvia o ACK atual solicitando o byte correto
-            enviarMensagem(6)
+            if not recebeu_algum_pacote:
+                print("Timeout aguardando início do download. Retransmitindo solicitação...")
+                conexao.num_msg = msg_num_inicial
+                enviarMensagem(3, int(opcao))
+            else:
+                enviarMensagem(6)
             continue
 
         tipo, _, _, payload = desencapsular(dados)
 
         if tipo == 4 and payload:
+            recebeu_algum_pacote = True
             buffer_musica.extend(payload)
-        elif tipo == 5:
+        elif tipo == 5 and payload is not None:
             nome_arquivo = f"musica_{opcao}.mp3"
             with open(nome_arquivo, "wb") as f:
                 f.write(buffer_musica)
@@ -153,12 +153,12 @@ def baixar_musica(opcao):
             break
         elif tipo in (8, 9, 10, 11, 12):
             break
-        
+
 def conectar():
     print("Conectando ao servidor...")
     tentativas = 0
     while tentativas < 5:
-        enviarMensagem(1)          # CONN_REQ
+        enviarMensagem(1)  # CONN_REQ
         resposta = receberMensagem()
         if resposta is not None:
             return
@@ -166,11 +166,11 @@ def conectar():
         tentativas += 1
     print("Não foi possível conectar após várias tentativas.")
 
-
 def menu():
     opcao = input("Digite a opção desejada: ")
     return opcao
 
+# Execução Principal
 conexao = Conexao(gerar_isn(), 0)
 
 conectar()
