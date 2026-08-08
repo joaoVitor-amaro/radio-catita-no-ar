@@ -1,7 +1,7 @@
 """
 Grupo:
     João Vitor Amaro de Melo   
-
+    Gabriel Cardoso Sales
 """
 import socket
 import struct
