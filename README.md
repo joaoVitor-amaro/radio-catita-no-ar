@@ -46,7 +46,7 @@ Resumo do formato das mensagens (cabeçalho de 7 bytes: 1 byte de tipo + 4 bytes
 | INVALID_MUSIC | 0x0B | Servidor → Cliente |
 | INVALID_MSG | 0x0C | Servidor → Cliente |
 
-A especificação completa está no PDF do trabalho (`Especificacao_Trabalho_Redes`).
+A especificação completa está no PDF do trabalho (`docs/Especificacao_Trabalho_Redes_-_Semestre_2026-1v2.pdf`).
 
 ## 👥 Autores
 
